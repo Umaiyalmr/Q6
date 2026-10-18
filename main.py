@@ -1,88 +1,85 @@
 
-import time
-import uuid
-from collections import defaultdict, deque
-from math import ceil
-from threading import Lock
-
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from jose import jwt, JWTError, ExpiredSignatureError
 
-EMAIL = "23f2005531@ds.study.iitm.ac.in"
-ALLOWED_ORIGIN = "https://app-m7ulh9.example.com"
+# --------------------------------------------------
+# Exact assigned JWT configuration
+# --------------------------------------------------
 
-RATE_LIMIT = 9
-WINDOW_SECONDS = 10
+ISSUER = "https://idp.exam.local"
+AUDIENCE = "tds-dzkopdin.apps.exam.local"
+ALGORITHM = "RS256"
 
-api = FastAPI(title="Middleware Stack API")
+PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2okOHspNjgA+2rTLbeuY
+cxiP/hG8C6Sb9iwg3yiLAA4HCnpITcbWCSelbvbYGuc3EbNy4xFyf5Cbj5DHJMID
+EkryOgyd2giIIIBOUBj8S63uGcnRpOBh9NFatfNwheKuzsPuVNldu6A9cNteNpXc
+WyJjG2axVfmq7i6SuKr1JoWYG7xTTAvKPujSl4OtsQfO3h5NepzdfXpr28oNnzfW
+ed+zclR6BcmNNo/WVfJ4xyCLSf0BCOgdTgW6PdaChd1l9VDetJZVEgC5tkyvXsfI
+SI6iyrYbKR0NEBSqq4XkadEjsCs4F1RncsS4LlgniT7GlkL9Mce3b0wGLs9/7ZIX
+dQIDAQAB
+-----END PUBLIC KEY-----"""
 
-request_times = defaultdict(deque)
-rate_lock = Lock()
-
-
-# Middleware 1: Request context
-@api.middleware("http")
-async def request_context(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    request.scope["request_id"] = request_id
-
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    return response
-
-
-# Middleware 2: Per-client rate limiting
-@api.middleware("http")
-async def rate_limit_middleware(request: Request, call_next):
-    if request.method == "OPTIONS" or request.url.path != "/ping":
-        return await call_next(request)
-
-    client_id = request.headers.get("X-Client-Id", "anonymous")
-    now = time.monotonic()
-
-    with rate_lock:
-        timestamps = request_times[client_id]
-
-        while timestamps and now - timestamps[0] >= WINDOW_SECONDS:
-            timestamps.popleft()
-
-        if len(timestamps) >= RATE_LIMIT:
-            retry_after = max(
-                1,
-                ceil(WINDOW_SECONDS - (now - timestamps[0])),
-            )
-            return JSONResponse(
-                status_code=429,
-                content={"detail": "Rate limit exceeded"},
-                headers={"Retry-After": str(retry_after)},
-            )
-
-        timestamps.append(now)
-
-    return await call_next(request)
+app = FastAPI(title="JWT Verification API")
 
 
-# Endpoint
-@api.get("/ping")
-async def ping(request: Request):
-    return {
-        "email": EMAIL,
-        "request_id": request.scope["request_id"],
-    }
+# --------------------------------------------------
+# CORS
+# --------------------------------------------------
 
-
-# Middleware 3: Strict CORS — only approved origins receive ACAO.
-# If the exam page origin differs from ALLOWED_ORIGIN, add its exact
-# origin to this list. Never use "*" for this assignment.
-app = CORSMiddleware(
-    app=api,
-    allow_origins=[
-        ALLOWED_ORIGIN,
-        # Add the exact exam page origin here if different.
-    ],
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET", "OPTIONS"],
-    allow_headers=["X-Request-ID", "X-Client-Id", "Content-Type"],
-    expose_headers=["X-Request-ID", "Retry-After"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+
+# --------------------------------------------------
+# Request schema
+# --------------------------------------------------
+
+class VerifyRequest(BaseModel):
+    token: str
+
+
+# --------------------------------------------------
+# POST /verify
+# --------------------------------------------------
+
+@app.post("/verify")
+async def verify_token(body: VerifyRequest):
+    try:
+        # Verify signature, issuer, audience and expiration.
+        claims = jwt.decode(
+            body.token,
+            PUBLIC_KEY,
+            algorithms=[ALGORITHM],
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            options={
+                "verify_signature": True,
+                "verify_exp": True,
+                "verify_iss": True,
+                "verify_aud": True,
+                "require_exp": True,
+                "require_iss": True,
+                "require_aud": True,
+            },
+        )
+
+        return {
+            "valid": True,
+            "email": claims.get("email", ""),
+            "sub": claims.get("sub", ""),
+            "aud": claims.get("aud", ""),
+        }
+
+    except (ExpiredSignatureError, JWTError, ValueError, TypeError):
+        raise HTTPException(
+            status_code=401,
+            detail={"valid": False},
+        )
