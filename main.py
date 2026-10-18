@@ -9,7 +9,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-# Assigned configuration
 EMAIL = "23f2005531@ds.study.iitm.ac.in"
 ALLOWED_ORIGIN = "https://app-m7ulh9.example.com"
 
@@ -18,7 +17,6 @@ WINDOW_SECONDS = 10
 
 api = FastAPI(title="Middleware Stack API")
 
-# Per-client sliding-window buckets
 request_times = defaultdict(deque)
 rate_lock = Lock()
 
@@ -27,9 +25,9 @@ rate_lock = Lock()
 @api.middleware("http")
 async def request_context(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.scope["request_id"] = request_id
 
     response = await call_next(request)
-
     response.headers["X-Request-ID"] = request_id
     return response
 
@@ -37,7 +35,6 @@ async def request_context(request: Request, call_next):
 # Middleware 2: Per-client rate limiting
 @api.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    # CORS preflight requests must not consume rate-limit quota.
     if request.method == "OPTIONS" or request.url.path != "/ping":
         return await call_next(request)
 
@@ -47,7 +44,6 @@ async def rate_limit_middleware(request: Request, call_next):
     with rate_lock:
         timestamps = request_times[client_id]
 
-        # Remove requests outside the 10-second window.
         while timestamps and now - timestamps[0] >= WINDOW_SECONDS:
             timestamps.popleft()
 
@@ -56,7 +52,6 @@ async def rate_limit_middleware(request: Request, call_next):
                 1,
                 ceil(WINDOW_SECONDS - (now - timestamps[0])),
             )
-
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Rate limit exceeded"},
@@ -68,23 +63,23 @@ async def rate_limit_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# Endpoint: GET /ping
+# Endpoint
 @api.get("/ping")
 async def ping(request: Request):
     return {
         "email": EMAIL,
-        "request_id": request.headers.get("X-Request-ID")
-        or request.scope.get("request_id"),
+        "request_id": request.scope["request_id"],
     }
 
 
-# Middleware 3: Strict CORS.
-# Keep this wrapper at the bottom so CORS also covers 429 responses.
+# Middleware 3: Strict CORS — only approved origins receive ACAO.
+# If the exam page origin differs from ALLOWED_ORIGIN, add its exact
+# origin to this list. Never use "*" for this assignment.
 app = CORSMiddleware(
     app=api,
     allow_origins=[
         ALLOWED_ORIGIN,
-        # Add the exam page's exact origin here if different.
+        # Add the exact exam page origin here if different.
     ],
     allow_credentials=False,
     allow_methods=["GET", "OPTIONS"],
